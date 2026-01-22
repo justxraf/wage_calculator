@@ -1,0 +1,11 @@
+[package]
+name = "wage_calculator"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+chrono = { version = "0.4.43", features = ["serde"]}
+native_db = "0.8.2"
+native_model = "0.4.20"
+
+serde = {version="1.0.228", features = ["derive"]}
