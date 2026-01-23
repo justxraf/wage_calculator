@@ -2,17 +2,10 @@ use std::time::Instant;
 use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime, NaiveTime, TimeDelta, Weekday};
 use serde::{Deserialize, Serialize};
 use native_db::{db_type::Error, *};
-use native_model::{native_model, Model};
+use native_model::{Model, native_model};
 
 
 fn main() {
-    let target_date = 
-    NaiveDate::from_ymd_opt(2026, 12, 31)
-    .expect("Invalid date provided");
-
-
-    let first_day = NaiveDate::from_ymd_opt(2026, 1, 15).expect("Invalid date");
-
     // 2. Initialize the Job struct
     let my_job = Job {
         id: 101,
@@ -26,19 +19,21 @@ fn main() {
         bank_holiday_multiplier: Some(2.5),
         christmass_day_multiplier: Some(3.0),
         unsociable_hours_multiplier: Some(1.2),
-        
+
         // Pattern starts on March 16th, 2026
         first_day: NaiveDate::from_ymd_opt(2026, 3, 16),
-        
+
         // Fixed 8:30 AM start
         fixed_start_time: NaiveTime::from_hms_opt(8, 30, 0),
-        
+
         // Precise 8 hour, 15 minute, 30 second shift
         fixed_shift_duration: Some(
-            Duration::hours(8) + 
-            Duration::minutes(15) + 
+            Duration::hours(8) +
+            Duration::minutes(15) +
             Duration::seconds(30)
         ),
+
+        tax_week_start: Some(TaxWeekStart::Sunday),
     };
     let start_date = NaiveDate::from_ymd_opt(2026, 01, 18).expect("");
     let end_date = NaiveDate::from_ymd_opt(2026, 01, 24).expect("");
@@ -60,7 +55,7 @@ fn print_shifts(my_job: Job,start_date: NaiveDate, target_date: NaiveDate) {
 
     let duration = start.elapsed();
 
-    if(schedule.is_empty()) {
+    if schedule.is_empty() {
         println!("No shifts found from {:?} to {:?}", start_date.to_string().replace("-", "/"), target_date.to_string().replace("-", "/"));
         return
     }
@@ -76,6 +71,7 @@ fn print_shifts(my_job: Job,start_date: NaiveDate, target_date: NaiveDate) {
 }
 
 // If sunday, add one day to get the week commencing. // If Sunday to Saturday rota.
+#[derive(PartialEq, Debug, Clone, Serialize, Deserialize)]
 struct TaxWeek {
     week_commencing: u8,
     financial_year: String, // e.g. 2025/2026, 2026/2027
@@ -83,24 +79,34 @@ struct TaxWeek {
     week_start_date: NaiveDate,
 }
 
-#[derive(PartialEq, Debug, Clone, Copy)]
+#[derive(PartialEq, Debug, Clone, Copy, Serialize, Deserialize)]
 enum TaxWeekStart {
     Sunday,
     Monday
 }
 impl TaxWeek {
     fn new(date: NaiveDate, tax_week_start: TaxWeekStart) -> TaxWeek {
-        let fixed_date = if matches!(tax_week_start, TaxWeekStart::Sunday) && date.weekday() == Weekday::Sun {
-            date + TimeDelta::days(1)
+        let fixed_date = if matches!(tax_week_start, TaxWeekStart::Sunday) 
+            && date.weekday() == Weekday::Sun {
+            date.checked_add_signed(TimeDelta::days(1))
+                .unwrap_or(date) // fallback to original date
         } else { date };
 
         let week = TaxWeek::get_week_commnencing(fixed_date);
         let financial_year = TaxWeek::get_financial_year(fixed_date);
 
         let week_start_date = if matches!(tax_week_start, TaxWeekStart::Sunday) {
-            date - TimeDelta::days(date.weekday().num_days_from_sunday() as i64)
+            date
+            .checked_sub_signed(
+                TimeDelta::days(date.weekday().num_days_from_sunday() as i64)
+            )
+            .unwrap() // todo -- make sure to handle error cases.
         } else {
-            date - TimeDelta::days(date.weekday().num_days_from_monday() as i64)
+            date
+            .checked_sub_signed(
+                TimeDelta::days(date.weekday().num_days_from_monday() as i64)
+            )
+            .unwrap() // todo -- handle error case
         };
 
         TaxWeek {
@@ -111,7 +117,7 @@ impl TaxWeek {
             }
     }
     fn get_week_commnencing(date: NaiveDate) -> u8 {
-        let cycle_start_of_financial_year = TaxWeek::get_year_cycle_of_financial_year(date);G
+        let cycle_start_of_financial_year = TaxWeek::get_year_cycle_of_financial_year(date);
         let financial_year_start_date = NaiveDate::from_ymd_opt(cycle_start_of_financial_year, 4, 6).expect("invalid date format");
 
         let days_elapsed = (date - financial_year_start_date).num_days();
@@ -135,7 +141,7 @@ impl TaxWeek {
     }
 }
 
-
+#[derive(PartialEq, Debug, Clone, Serialize, Deserialize)]
 enum ShiftPattern {
     SixOnTwoOff,
     FourOnFourOff(AveragePatternMatch), // 
@@ -144,6 +150,7 @@ enum ShiftPattern {
 // If not paid on average,
 // Calculation should be proceeded by the weekly/monthly total amount of hours worked
 // If paid on average, use: (total_hours_in_a_week / 8 (as 8 days is a cycle) * 7)
+#[derive(PartialEq, Debug, Clone, Copy, Serialize, Deserialize)]
 struct AveragePatternMatch {
     is_paid_on_average: bool,
 
@@ -173,7 +180,6 @@ impl ShiftPattern {
             ShiftPattern::Custom(days) => {
                 days.into_iter().count() as i32
             }
-            _ => { 0 }
         }
     }
 }
@@ -186,6 +192,7 @@ impl ShiftPattern {
         }
     }
 }
+#[derive(PartialEq, Debug, Clone, Serialize, Deserialize)]
 struct Job {
     id: i32,
     name: String,
@@ -208,12 +215,19 @@ impl Job {
     fn get_tax_week_start(&self) -> TaxWeekStart {
         self.tax_week_start.unwrap_or(TaxWeekStart::Sunday)
     }
-    fn get_shifts_for_period_of(&self,  start_date: NaiveDate, end_date: NaiveDate) -> Vec<Shift> {
-        let shifts: Vec<Shift> = Vec::new();
-        // TODO: Fetch shifts data from the database for a given period
-        // Note: First try to get them from the global context of dioxus, as it is
-        // unnecessary to load them multiple times.
-        Vec::new()
+    fn get_shifts_for_period_of(
+        &self,
+        start_date: NaiveDate,
+        end_date: NaiveDate,
+        db: &Database
+    ) -> Result<Vec<Shift>, db_type::Error> {
+        // Get shifts for this specific job within the date range
+        Shift::get_shifts_for_period(db, start_date, end_date, Some(self.id))
+    }
+    
+    fn get_all_shifts(&self, db: &Database) -> Result<Vec<Shift>, db_type::Error> {
+        // Get entire work history for this job
+        Shift::get_all_shifts_for_job(db, self.id)
     }
     fn get_scheduled_shifts_for_period(&self, start_date: NaiveDate, end_date: NaiveDate) -> Vec<ScheduledShift> {
         let shifts = self.calculate_scheduled_shifts_up_to(end_date);
@@ -371,24 +385,6 @@ impl Job {
                 }
             };
 
-            // match current_block_start_weekday {
-            //     Weekday::Mon => {
-                    
-
-            //     },
-            //     Weekday::Sat => {
-
-            //     }
-            //     _ => {
-
-            //     }
-            // };
-            // if 1st day is tuesday, wednesday or thursday, 
-            // keep going with the schedule until the sixth day.
-
-            // if the first day is Monday - Saturday, Sunday and Monday are days OFF!
-            // if the first day is Saturday - Friday, Saturday and Sunday are days OFF!
-
             current_day = ScheduledShift {
                 job_id: self.id,
                 date: next_date,
@@ -408,45 +404,178 @@ impl Job {
         .unwrap_or(false)
     }
 }
-#[derive(Clone, Copy)]
+#[derive(PartialEq, Debug, Clone, Copy, Serialize, Deserialize)]
 struct ScheduledShift {
     job_id: i32,
     date: NaiveDate,
     status: ShiftStatus,
     day_in_cycle: i32
 }
-#[derive(Clone, Copy, PartialEq)]
+#[derive(PartialEq, Debug, Clone, Copy, Serialize, Deserialize)]
 enum ShiftStatus {
     OFF,
     ON
 }
+
+
+#[derive(PartialEq, Serialize, Deserialize, Debug, Clone)]
+#[native_model(id = 4, version = 1)]
+#[native_db]
 struct Shift {
+    #[primary_key]
     id: i32,
+    
+    #[secondary_key]
     job_id: i32,
+
     date: NaiveDate,
+    // This is the key field for date range queries
+    #[secondary_key]
+    date_key: i32,
+    
     shift_type: ShiftType,
     start: NaiveDateTime,
     finish: NaiveDateTime,
-
 }
 
 // saved in the database
+#[derive(PartialEq, Serialize, Deserialize, Debug, Clone)]
+#[native_model(id = 5, version = 1)]
+#[native_db]
 struct Deduction {
+    #[primary_key]
     id: i32,
-    shift_id: Option<i32>, // As it may not be assigned directly to a shift, it may be scheduled.
+    
+    #[secondary_key]
+    job_id: i32,
+    shift_id: i32,
+
     name: String,
-    description: String,
-    amount: u32,
-    date: Option<NaiveDate>
+    description: Option<String>,
+    amount: u32, // in pence
+    
+    // Tax treatment
+    is_pre_tax: bool, // true = reduces taxable income, false = post-tax deduction
+    
+    // Scheduling
+    schedule: DeductionSchedule,
 }
 
-// Fetch specific deductions from the native database
-// TODO later try to fetch them from global context of dioxus first!
+#[derive(PartialEq, Serialize, Deserialize, Debug, Clone)]
+enum DeductionSchedule {
+    // One-time deduction on a specific date
+    OneTime {
+        date: NaiveDate,
+        date_key: i32, // for querying
+        shift_id: Option<i32>, // if tied to a specific shift
+    },
+    
+    // Repeats on specific weekdays (e.g., every Monday and Friday)
+    Weekly {
+        weekdays: Vec<Weekday>,
+        start_date: NaiveDate,
+        end_date: Option<NaiveDate>, // None = repeats forever
+    },
+    
+    // Repeats on specific dates each month (e.g., 1st and 15th)
+    Monthly {
+        day_of_month: Vec<u8>, // 1-31
+        start_date: NaiveDate,
+        end_date: Option<NaiveDate>,
+    },
+    
+    // Repeats on specific calendar dates (e.g., birthdays, holidays)
+    SpecificDates {
+        dates: Vec<NaiveDate>,
+    },
+}
+
+
+// Fetch specific deductions from the native database --done
+// TODO later try to fetch them from global context of dioxus first! --later
+
 impl Deduction {
-    fn get_deductions_for(date: NaiveDate) -> Vec<Deduction> {
-        todo!()
+    fn new(
+        job_id: i32, 
+        shift_id: i32, 
+        name: String, 
+        description: Option<String>, 
+        amount: u32, 
+        is_pre_tax: bool, 
+        schedule: DeductionSchedule) -> Deduction {
+            
+            Deduction { id: , job_id, shift_id, name, description, amount, is_pre_tax, schedule }
+    }
+    // Check if this deduction applies on a given date
+    fn applies_on(&self, date: NaiveDate) -> bool {
+        match &self.schedule {
+            DeductionSchedule::OneTime { date: d, .. } => *d == date,
+            
+            DeductionSchedule::Weekly { weekdays, start_date, end_date } => {
+                if date < *start_date {
+                    return false;
+                }
+                if let Some(end) = end_date {
+                    if date > *end {
+                        return false;
+                    }
+                }
+                weekdays.contains(&date.weekday())
+            },
+            
+            DeductionSchedule::Monthly { day_of_month, start_date, end_date } => {
+                if date < *start_date {
+                    return false;
+                }
+                if let Some(end) = end_date {
+                    if date > *end {
+                        return false;
+                    }
+                }
+                day_of_month.contains(&(date.day() as u8))
+            },
+            
+            DeductionSchedule::SpecificDates { dates } => {
+                dates.contains(&date)
+            },
+        }
+    }
+    
+    // Get all deductions for a date range
+    fn get_deductions_for_period(
+        db: &Database,
+        job_id: i32,
+        start: NaiveDate,
+        end: NaiveDate
+    ) -> Result<Vec<Deduction>, Error> {
+        let r = db.r_transaction()?;
+        
+        let all_deductions: Vec<Deduction> = r
+            .scan()
+            .secondary(DeductionKey::job_id)?
+            .start_with(job_id)?
+            .collect::<Result<Vec<_>, _>>()?;
+        
+        // Filter to only those that apply in this period
+        let applicable: Vec<Deduction> = all_deductions
+            .into_iter()
+            .filter(|d| {
+                let mut current = start;
+                while current <= end {
+                    if d.applies_on(current) {
+                        return true;
+                    }
+                    current = current.succ_opt().unwrap();
+                }
+                false
+            })
+            .collect();
+        
+        Ok(applicable)
     }
 }
+
+#[derive(PartialEq, Debug, Clone, Serialize, Deserialize)]
 
 struct ShiftRecord {
     shift: Shift,
@@ -455,6 +584,88 @@ struct ShiftRecord {
 }
 
 impl Shift {
+    fn date_to_key(date: NaiveDate) -> i32 {
+        date.year() * 10000 + date.month() as i32 *100 + date.day() as i32
+    }
+    fn new(
+        id: i32,
+        job_id: i32,
+        date: NaiveDate,
+        shift_type: ShiftType,
+        start: NaiveDateTime,
+        finish: NaiveDateTime,
+    ) -> Self {
+        Shift {
+            id,
+            job_id,
+            date,
+            date_key: Self::date_to_key(date),
+            shift_type,
+            start,
+            finish,
+        }
+    }
+
+    // Gets all shifts for a given period and then filters by job_id.
+    fn get_shifts_for_period(
+        db: &Database,
+        start_date: NaiveDate,
+        end_date: NaiveDate,
+        job_id: Option<i32>, // None = all jobs, Some(id) = specific job
+    ) -> Result<Vec<Shift>, db_type::Error> {
+        let r = db.r_transaction()?;
+        
+        let start_key = Self::date_to_key(start_date);
+        let end_key = Self::date_to_key(end_date);
+        
+        let shifts: Result<Vec<Shift>, db_type::Error> = r
+            .scan()
+            .secondary(ShiftKey::date_key)?
+            .range(start_key..=end_key)?
+            .collect();
+        
+        let filtered = match job_id {
+            Some(id) => shifts?
+                .into_iter()
+                .filter(|shift| shift.job_id == id)
+                .collect(),
+            None => shifts?,
+        };
+        
+        Ok(filtered)
+    }
+    
+    // Needed for entire history
+    fn get_all_shifts_for_job(
+        db: &Database,
+        job_id: i32,
+    ) -> Result<Vec<Shift>, db_type::Error> {
+        let r = db.r_transaction()?;
+        
+        let shifts: Result<Vec<Shift>, db_type::Error> = r
+            .scan()
+            .secondary(ShiftKey::job_id)?
+            .start_with(job_id)?
+            .collect();
+        
+        shifts
+    }
+    // Get all shifts for a specific date
+    fn get_shifts_for_date(
+        db: &Database,
+        date: NaiveDate
+    ) -> Result<Vec<Shift>, db_type::Error> {
+        let r = db.r_transaction()?;
+        let date_key = Self::date_to_key(date);
+        
+        let shifts: Result<Vec<Shift>, db_type::Error> = r
+            .scan()
+            .secondary(ShiftKey::date_key)?
+            .start_with(date_key)?
+            .collect();
+        
+        shifts
+    }
     fn get_pretty_time_worked(&self) -> String {
         let time = self.get_time_worked();
 
@@ -470,6 +681,7 @@ impl Shift {
 
     }
 }
+#[derive(PartialEq, Debug, Clone, Copy, Serialize, Deserialize)]
 enum ShiftType {
     Sick,
     Holiday,
@@ -479,40 +691,27 @@ enum ShiftType {
 
 
 // Shift Pay is generated automatically, no need to save in the database!
+#[derive(PartialEq, Debug, Clone, Serialize, Deserialize)]
+
 struct ShiftPayment {
     shift_id: i32,
     job_id: i32,
-
-    net_pay: u32,
-    gross_pay: Option<u32>,
-    deductions: Option<u32>, // Only applicable, if set up by the user
-    
-    payment: Option<ShiftPaymentType>,
+    amount: u32,
+    payment_type: ShiftPaymentType,
+    deductions: Option<Vec<Deduction>>, // Only applicable, if set up by the user
 }
 
 impl ShiftPayment {
-
     /*
     
     Get total payment for a given day
     - Check the day to see what value to give
 
      */
-    fn get_pay_for(shift: &Shift, job: &Job) -> ShiftPayment {
+    fn get_pay_for_period_of(job_id: i32, ) -> ShiftPayment {
         // check whether the user has scheduled their shifts
 
-        let shift_payment = ShiftPayment { 
-            shift_id: shift.id,
-            job_id: job.id,
-
-            net_pay: 32,
-            gross_pay: None, // Add in the future, after introducing taxes TODO
-            deductions: None, // Add later after adding deductions TODO
-
-            payment: Some(ShiftPaymentType::Basic(3200)) // todo change it
-        };
-
-        shift_payment
+        todo!()
     }
 
     fn new_for(&self, shift: &Shift, job: &Job) -> ShiftPayment {
@@ -520,18 +719,245 @@ impl ShiftPayment {
         
         todo!()
     }
-    fn get_pay_for_period_of(start_date: NaiveDate, finish_date: NaiveDate, job: &Job) -> Vec<ShiftPayment> {
+    fn get_payments_for_period_of(start_date: NaiveDate, finish_date: NaiveDate, job_id: i32) -> Vec<ShiftPayment> {
         todo!()
     }
 }
+
+struct ShiftPaymentSummary {
+    payments: Vec<ShiftPayment>,
+    from: NaiveDate,
+    to: NaiveDate,
+}
+impl ShiftPaymentSummary {
+    fn new(from: NaiveDate, to: NaiveDate, job_id: i32) -> ShiftPaymentSummary {
+        let payments = &ShiftPayment::get_payments_for_period_of(from, to, job_id);
+
+        todo!()
+    }
+    fn get_gross(&self) -> u32 {
+        self.payments.iter().map(|payment| {
+            payment.amount
+        }).sum()
+    }
+    fn get_tax_paid(&self, region: UKRegion) -> u32 {
+        self.payments.iter().map(|payment| {
+            let summary = TaxSummary::new(payment, region);
+            summary.get_tax_prediction()
+        }).sum()
+    }
+    fn get_total_deductions(&self, region: UKRegion) -> u32 { // After Tax, so only tax and nin.
+        self.payments.iter().map(|payment|{
+            let summary = TaxSummary::new(payment, region);
+            let tax = summary.get_tax_prediction();
+            let nin = summary.get_national_insurance_prediction();
+
+            tax + nin
+        }).sum()
+    }
+}
+#[derive(PartialEq, Debug, Clone, Copy, Serialize, Deserialize)]
+enum UKRegion {
+    England,
+    Wales,
+    NorthernIreland,
+    Scotland,
+}
+
+struct TaxSummary<'a> {
+    shift_payment: &'a ShiftPayment,
+    region: UKRegion,
+}
+
+impl<'a> TaxSummary<'a> {
+    fn new(payment: &'a ShiftPayment, region: UKRegion) -> TaxSummary<'a> {
+        TaxSummary {
+            shift_payment: payment,
+            region
+        }
+    }
+
+    // Calculate income tax based on annual gross income
+    // Amounts are in pence (u32), so £12,570 = 1,257,000 pence
+    fn get_tax_prediction(&self) -> u32 {
+        let annual_gross = self.shift_payment.amount;
+
+        match self.region {
+            UKRegion::Scotland => self.calculate_scottish_income_tax(annual_gross),
+            UKRegion::England | UKRegion::Wales | UKRegion::NorthernIreland => {
+                self.calculate_ruk_income_tax(annual_gross)
+            }
+        }
+    }
+
+    // Calculate Scottish Income Tax (2026/27 rates)
+    fn calculate_scottish_income_tax(&self, annual_gross_pence: u32) -> u32 {
+        let personal_allowance: u32 = 1_257_000; // £12,570 in pence
+
+        // Apply personal allowance taper for high earners
+        let adjusted_allowance = if annual_gross_pence > 10_000_000 {
+            // £100,000+ - lose £1 for every £2 over £100k
+            let excess = annual_gross_pence.saturating_sub(10_000_000);
+            let reduction = excess / 2;
+            personal_allowance.saturating_sub(reduction)
+        } else {
+            personal_allowance
+        };
+
+        if annual_gross_pence <= adjusted_allowance {
+            return 0;
+        }
+
+        let taxable_income = annual_gross_pence - adjusted_allowance;
+        let mut tax = 0u32;
+
+        // Starter rate: £12,571 - £16,537 @ 19%
+        let starter_limit = 395_700; // (16,537 - 12,570) * 100 = 396,700 pence
+        if taxable_income > 0 {
+            let taxable_at_starter = taxable_income.min(starter_limit);
+            tax += (taxable_at_starter * 19) / 100;
+        }
+
+        // Basic rate: £16,538 - £29,526 @ 20%
+        let basic_limit = 1_298_900; // (29,526 - 16,537) * 100 = 1,298,900 pence
+        if taxable_income > starter_limit {
+            let taxable_at_basic = (taxable_income - starter_limit).min(basic_limit);
+            tax += (taxable_at_basic * 20) / 100;
+        }
+
+        // Intermediate rate: £29,527 - £43,662 @ 21%
+        let intermediate_limit = 1_413_600; // (43,662 - 29,526) * 100
+        if taxable_income > starter_limit + basic_limit {
+            let taxable_at_intermediate = (taxable_income - starter_limit - basic_limit).min(intermediate_limit);
+            tax += (taxable_at_intermediate * 21) / 100;
+        }
+
+        // Higher rate: £43,663 - £75,000 @ 42%
+        let higher_limit = 3_133_800; // (75,000 - 43,662) * 100
+        if taxable_income > starter_limit + basic_limit + intermediate_limit {
+            let taxable_at_higher = (taxable_income - starter_limit - basic_limit - intermediate_limit).min(higher_limit);
+            tax += (taxable_at_higher * 42) / 100;
+        }
+
+        // Advanced rate: £75,001 - £125,140 @ 45%
+        let advanced_limit = 5_014_000; // (125,140 - 75,000) * 100
+        if taxable_income > starter_limit + basic_limit + intermediate_limit + higher_limit {
+            let taxable_at_advanced = (taxable_income - starter_limit - basic_limit - intermediate_limit - higher_limit).min(advanced_limit);
+            tax += (taxable_at_advanced * 45) / 100;
+        }
+
+        // Top rate: Over £125,140 @ 48%
+        if taxable_income > starter_limit + basic_limit + intermediate_limit + higher_limit + advanced_limit {
+            let taxable_at_top = taxable_income - starter_limit - basic_limit - intermediate_limit - higher_limit - advanced_limit;
+            tax += (taxable_at_top * 48) / 100;
+        }
+
+        tax
+    }
+
+    // Calculate Rest of UK Income Tax (England, Wales, Northern Ireland - 2026/27 rates)
+    fn calculate_ruk_income_tax(&self, annual_gross_pence: u32) -> u32 {
+        let personal_allowance: u32 = 12_570_00; // £12,570 in pence
+
+        // Apply personal allowance taper for high earners
+        let adjusted_allowance = if annual_gross_pence > 10_000_000 {
+            let excess = annual_gross_pence.saturating_sub(10_000_000);
+            let reduction = excess / 2;
+            personal_allowance.saturating_sub(reduction)
+        } else {
+            personal_allowance
+        };
+
+        if annual_gross_pence <= adjusted_allowance {
+            return 0;
+        }
+
+        let taxable_income = annual_gross_pence - adjusted_allowance;
+        let mut tax = 0u32;
+
+        // Basic rate: £12,571 - £50,270 @ 20%
+        let basic_limit = 3_770_000; // (50,270 - 12,570) * 100
+        if taxable_income > 0 {
+            let taxable_at_basic = taxable_income.min(basic_limit);
+            tax += (taxable_at_basic * 20) / 100;
+        }
+
+        // Higher rate: £50,271 - £125,140 @ 40%
+        let higher_limit = 7_487_000; // (125,140 - 50,270) * 100
+        if taxable_income > basic_limit {
+            let taxable_at_higher = (taxable_income - basic_limit).min(higher_limit);
+            tax += (taxable_at_higher * 40) / 100;
+        }
+
+        // Additional rate: Over £125,140 @ 45%
+        if taxable_income > basic_limit + higher_limit {
+            let taxable_at_additional = taxable_income - basic_limit - higher_limit;
+            tax += (taxable_at_additional * 45) / 100;
+        }
+
+        tax
+    }
+
+    // Calculate National Insurance contributions (same across all UK regions)
+    // Class 1 Employee rates 2026/27
+    fn get_national_insurance_prediction(&self) -> u32 {
+        let annual_gross_pence = self.shift_payment.amount;
+
+        // Annual thresholds in pence
+        let primary_threshold = 1_257_000; // £12,570 (£242/week * 52)
+        let upper_earnings_limit = 5_027_000; // £50,270 (£967/week * 52)
+
+        if annual_gross_pence <= primary_threshold {
+            return 0;
+        }
+
+        let mut ni = 0u32;
+
+        // 8% on earnings between £12,570 and £50,270
+        if annual_gross_pence > primary_threshold {
+            let taxable_at_8_percent = (annual_gross_pence - primary_threshold).min(upper_earnings_limit - primary_threshold);
+            ni += (taxable_at_8_percent * 8) / 100;
+        }
+
+        // 2% on earnings above £50,270
+        if annual_gross_pence > upper_earnings_limit {
+            let taxable_at_2_percent = annual_gross_pence - upper_earnings_limit;
+            ni += (taxable_at_2_percent * 2) / 100;
+        }
+
+        ni
+    }
+
+    fn get_gross_after_deductions(&self) -> u32 {
+        let gross = self.shift_payment.amount;
+        let total_deductions = self.get_total_deductions();
+        gross.saturating_sub(total_deductions)
+    }
+
+    fn get_total_deductions(&self) -> u32 {
+        let tax = self.get_tax_prediction();
+        let ni = self.get_national_insurance_prediction();
+
+        // Add any custom deductions if present
+        let custom_deductions = if let Some(ref deductions) = self.shift_payment.deductions {
+            deductions.iter().map(|d| d.amount).sum()
+        } else {
+            0
+        };
+
+        tax + ni + custom_deductions
+    }
+}
+
+#[derive(PartialEq, Debug, Clone, Serialize, Deserialize)]
 enum ShiftPaymentType {
-    Basic(u32),
-    Sunday(u32),
-    Saturday(u32),
-    Overtime(u32),
-    BankHoliday(u32),
-    Christmass(u32),
-    Unsociable(u32),
+    Basic,
+    Sunday,
+    Saturday,
+    Overtime,
+    BankHoliday,
+    Christmass,
+    Unsociable,
 
     // For example a bonus
     Custom(CustomShiftPaymentType),
@@ -574,12 +1000,6 @@ ShiftPaymentType is generated automatically based on the day >
 
 */
 
-
-/*
-
-
-
-*/
 impl CustomShiftPaymentType {
     fn get_reoccuring_payments(db: &Database, date: NaiveDate) -> Result<Vec<CustomShiftPaymentType>, Error> {
         let r_txn = db.r_transaction()?;
@@ -619,40 +1039,3 @@ impl CustomShiftPaymentType {
         Ok(filtered_payments)
     }
 }
-
-/*
-
-struct Shift {
-    id: i32,
-    job_id: i32,
-    date: NaiveDate,
-    shift_type: ShiftType,
-    start: NaiveDateTime,
-    finish: NaiveDateTime,
-}
-
-*/
-
-// Todo: Add bonuses
-
-
-/*
-struct Job {
-    id: i32,
-    name: String,
-    basic_pay: i32,
-    base_hours: Option<u32>,
-    shift_pattern: Option<ShiftPattern>,
-    overtime_multiplier: Option<f32>,
-    saturday_multiplier: Option<f32>,
-    sunday_multiplier: Option<f32>,
-    bank_holiday_multiplier: Option<f32>,
-    christmass_day_multiplier: Option<f32>,
-    unsociable_hours_multiplier: Option<f32>,
-    // The day marked as the beginning of the shift-pattern.
-    first_day: Option<NaiveDate>,
-    fixed_start_time: Option<NaiveTime>,
-    fixed_shift_duration: Option<Duration>,
-
-}
- */
