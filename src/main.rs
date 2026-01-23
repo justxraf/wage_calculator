@@ -1,16 +1,28 @@
-use std::time::Instant;
+use std::{sync::{Arc, atomic::{AtomicI32, Ordering}}, time::Instant};
 use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime, NaiveTime, TimeDelta, Weekday};
 use serde::{Deserialize, Serialize};
 use native_db::{db_type::Error, *};
 use native_model::{Model, native_model};
+use once_cell::sync::Lazy;
 
-
-fn main() {
-    // 2. Initialize the Job struct
+static MODELS: Lazy<Models> = Lazy::new(|| {
+    let mut models = Models::new();
+    models.define::<Job>().unwrap();
+    models.define::<Deduction>().unwrap();
+    models.define::<Shift>().unwrap();
+    models.define::<CustomShiftPaymentType>().unwrap();
+    models
+});
+fn main() -> Result<(), db_type::Error> {
+    let mut db = Builder::new().create_in_memory(&MODELS)?;
+    let id_gen = Arc::new(IdGenerator::new(&db).unwrap());
+    
+    // Example 1: Create a new Job
+    let job_id = id_gen.next_job_id();
     let my_job = Job {
-        id: 101,
+        id: job_id,
         name: String::from("Senior Technician"),
-        basic_pay: 2550, // $25.50 in cents
+        basic_pay: 2550,
         base_hours: Some(38),
         shift_pattern: Some(ShiftPattern::SixOnTwoOff),
         overtime_multiplier: Some(1.5),
@@ -19,35 +31,63 @@ fn main() {
         bank_holiday_multiplier: Some(2.5),
         christmass_day_multiplier: Some(3.0),
         unsociable_hours_multiplier: Some(1.2),
-
-        // Pattern starts on March 16th, 2026
         first_day: NaiveDate::from_ymd_opt(2026, 3, 16),
-
-        // Fixed 8:30 AM start
         fixed_start_time: NaiveTime::from_hms_opt(8, 30, 0),
-
-        // Precise 8 hour, 15 minute, 30 second shift
         fixed_shift_duration: Some(
-            Duration::hours(8) +
-            Duration::minutes(15) +
-            Duration::seconds(30)
+            Duration::hours(8) + Duration::minutes(15) + Duration::seconds(30)
         ),
-
         tax_week_start: Some(TaxWeekStart::Sunday),
     };
-    let start_date = NaiveDate::from_ymd_opt(2026, 01, 18).expect("");
-    let end_date = NaiveDate::from_ymd_opt(2026, 01, 24).expect("");
-    print_shifts(my_job, start_date, end_date);
 
-    // let feb = my_job.get_shifts_for_month(2, 2026);
+    // Example 2: Create a new Shift using generic syntax
+    let shift_id = id_gen.next_id::<Shift>();
+    let shift = Shift::new(
+        shift_id,
+        job_id,
+        NaiveDate::from_ymd_opt(2026, 1, 20).unwrap(),
+        ShiftType::ExtraShift,
+        NaiveDateTime::new(
+            NaiveDate::from_ymd_opt(2026, 1, 20).unwrap(),
+            NaiveTime::from_hms_opt(8, 30, 0).unwrap()
+        ),
+        NaiveDateTime::new(
+            NaiveDate::from_ymd_opt(2026, 1, 20).unwrap(),
+            NaiveTime::from_hms_opt(16, 45, 30).unwrap()
+        ),
+    );
 
-    // for day in feb {
-    //      let status_text = match day.status {
-    //         ShiftStatus::ON => "WORK",
-    //         _ => "OFF"
-    //     };
-    //     println!("{}: {} (Cycle Day: {}, Week Day: {})", day.date, status_text, day.day_in_cycle, day.date.weekday());
-    }
+    // Example 3: Create a Deduction
+    let deduction_id = id_gen.next_deduction_id();
+    let deduction = Deduction {
+        id: deduction_id,
+        job_id,
+        shift_id,
+        name: String::from("Pension Contribution"),
+        description: Some(String::from("Monthly pension deduction")),
+        amount: 10000, // £100.00 in pence
+        is_pre_tax: true,
+        schedule: DeductionSchedule::Monthly {
+            day_of_month: vec![1],
+            start_date: NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
+            end_date: None,
+        },
+    };
+
+    // Example 4: Pass id_gen to functions
+    create_shift_with_deductions(&db, &id_gen, job_id);
+
+    Ok(())
+}
+
+// Helper function that uses id_gen
+fn create_shift_with_deductions(db: &Database, id_gen: &IdGenerator, job_id: i32) {
+    let shift_id = id_gen.next_shift_id();
+    let deduction_id = id_gen.next_deduction_id();
+    
+    // Create entities...
+    println!("Created shift {} with deduction {}", shift_id, deduction_id);
+}
+
 
 fn print_shifts(my_job: Job,start_date: NaiveDate, target_date: NaiveDate) {
     let start = Instant::now();
@@ -192,8 +232,13 @@ impl ShiftPattern {
         }
     }
 }
-#[derive(PartialEq, Debug, Clone, Serialize, Deserialize)]
+
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[native_model(id = 4, version = 1)]
+#[native_db]
 struct Job {
+    #[primary_key]
     id: i32,
     name: String,
     basic_pay: i32,
@@ -212,6 +257,89 @@ struct Job {
     tax_week_start: Option<TaxWeekStart>,
 }
 impl Job {
+    fn new(id_gen: &IdGenerator, name: String, basic_pay: i32) -> Job {
+        Job {
+            id: id_gen.next_job_id(),
+            name,
+            basic_pay,
+            base_hours: None,
+            shift_pattern: None,
+            overtime_multiplier: None,
+            saturday_multiplier: None,
+            sunday_multiplier: None,
+            bank_holiday_multiplier: None,
+            christmass_day_multiplier: None,
+            unsociable_hours_multiplier: None,
+            first_day: None,
+            fixed_start_time: None,
+            fixed_shift_duration: None,
+            tax_week_start: None,
+        }
+    }
+
+    // Builder pattern methods for setting optional fields
+    fn with_base_hours(mut self, hours: u32) -> Self {
+        self.base_hours = Some(hours);
+        self
+    }
+
+    fn with_shift_pattern(mut self, pattern: ShiftPattern) -> Self {
+        self.shift_pattern = Some(pattern);
+        self
+    }
+
+    fn with_overtime_multiplier(mut self, multiplier: f32) -> Self {
+        self.overtime_multiplier = Some(multiplier);
+        self
+    }
+
+    fn with_saturday_multiplier(mut self, multiplier: f32) -> Self {
+        self.saturday_multiplier = Some(multiplier);
+        self
+    }
+
+    fn with_sunday_multiplier(mut self, multiplier: f32) -> Self {
+        self.sunday_multiplier = Some(multiplier);
+        self
+    }
+
+    fn with_bank_holiday_multiplier(mut self, multiplier: f32) -> Self {
+        self.bank_holiday_multiplier = Some(multiplier);
+        self
+    }
+
+    fn with_christmas_day_multiplier(mut self, multiplier: f32) -> Self {
+        self.christmass_day_multiplier = Some(multiplier);
+        self
+    }
+
+    fn with_unsociable_hours_multiplier(mut self, multiplier: f32) -> Self {
+        self.unsociable_hours_multiplier = Some(multiplier);
+        self
+    }
+
+    fn with_first_day(mut self, date: NaiveDate) -> Self {
+        self.first_day = Some(date);
+        self
+    }
+
+    fn with_fixed_start_time(mut self, time: NaiveTime) -> Self {
+        self.fixed_start_time = Some(time);
+        self
+    }
+
+    fn with_fixed_shift_duration(mut self, duration: Duration) -> Self {
+        self.fixed_shift_duration = Some(duration);
+        self
+    }
+
+    fn with_tax_week_start(mut self, start: TaxWeekStart) -> Self {
+        self.tax_week_start = Some(start);
+        self
+    }
+
+    //
+
     fn get_tax_week_start(&self) -> TaxWeekStart {
         self.tax_week_start.unwrap_or(TaxWeekStart::Sunday)
     }
@@ -496,15 +624,24 @@ enum DeductionSchedule {
 
 impl Deduction {
     fn new(
-        job_id: i32, 
-        shift_id: i32, 
-        name: String, 
-        description: Option<String>, 
-        amount: u32, 
-        is_pre_tax: bool, 
+        id_gen: &IdGenerator,
+        job_id: i32,
+        shift_id: i32,
+        name: String,
+        description: Option<String>,
+        amount: u32,
+        is_pre_tax: bool,
         schedule: DeductionSchedule) -> Deduction {
-            
-            Deduction { id: , job_id, shift_id, name, description, amount, is_pre_tax, schedule }
+            Deduction {
+                id: id_gen.next_deduction_id(),
+                job_id,
+                shift_id,
+                name,
+                description,
+                amount,
+                is_pre_tax,
+                schedule,
+            }
     }
     // Check if this deduction applies on a given date
     fn applies_on(&self, date: NaiveDate) -> bool {
@@ -1037,5 +1174,115 @@ impl CustomShiftPaymentType {
         .collect();
 
         Ok(filtered_payments)
+    }
+}
+
+
+// ID HANDLER FOR ALL ENTITIES
+
+// ID Generator for all entity types
+pub struct IdGenerator {
+    shift_counter: AtomicI32,
+    job_counter: AtomicI32,
+    deduction_counter: AtomicI32,
+    custom_payment_counter: AtomicI32,
+}
+
+trait HasId {
+    fn id(&self) -> i32;
+}
+
+// Maps each type to its counter in IdGenerator
+trait HasCounter {
+    fn get_counter(generator: &IdGenerator) -> &AtomicI32;
+}
+
+impl HasId for Deduction {
+    fn id(&self) -> i32 {
+        self.id
+    }
+}
+impl HasCounter for Deduction {
+    fn get_counter(generator: &IdGenerator) -> &AtomicI32 {
+        &generator.deduction_counter
+    }
+}
+
+impl HasId for Shift {
+    fn id(&self) -> i32 {
+        self.id
+    }
+}
+impl HasCounter for Shift {
+    fn get_counter(generator: &IdGenerator) -> &AtomicI32 {
+        &generator.shift_counter
+    }
+}
+
+impl HasId for Job {
+    fn id(&self) -> i32 {
+        self.id
+    }
+}
+impl HasCounter for Job {
+    fn get_counter(generator: &IdGenerator) -> &AtomicI32 {
+        &generator.job_counter
+    }
+}
+
+impl HasId for CustomShiftPaymentType {
+    fn id(&self) -> i32 {
+        self.id
+    }
+}
+impl HasCounter for CustomShiftPaymentType {
+    fn get_counter(generator: &IdGenerator) -> &AtomicI32 {
+        &generator.custom_payment_counter
+    }
+}
+
+impl IdGenerator {
+    // Create new generator initialized from database
+    pub fn new(db: &Database) -> Result<Self, Error> {
+        Ok(IdGenerator {
+            shift_counter: AtomicI32::new(Self::get_max_id::<Shift>(db)?),
+            job_counter: AtomicI32::new(Self::get_max_id::<Job>(db)?),
+            deduction_counter: AtomicI32::new(Self::get_max_id::<Deduction>(db)?),
+            custom_payment_counter: AtomicI32::new(Self::get_max_id::<CustomShiftPaymentType>(db)?),
+        })
+    }
+    fn get_max_id<T>(db: &Database) -> Result<i32, Error> where T: HasId + native_db::ToInput,{
+        let r = db.r_transaction()?;
+        let max_id = r
+            .scan()
+            .primary::<T>()?
+            .all()?
+            .filter_map(|result| result.ok())
+            .map(|item| item.id())
+            .max()
+            .unwrap_or(0);
+        Ok(max_id)
+    }
+
+    // Generic next_id function that works for any type with HasCounter
+    pub fn next_id<T>(&self) -> i32 where T: HasCounter {
+        T::get_counter(self).fetch_add(1, Ordering::SeqCst) + 1 as i32
+    }
+
+    // Convenience methods (optional - you can use next_id::<Type>() instead)
+    pub fn next_shift_id(&self) -> i32 {
+        self.next_id::<Shift>()
+    }
+
+    pub fn next_job_id(&self) -> i32 {
+        self.next_id::<Job>()
+    }
+
+    pub fn next_deduction_id(&self) -> i32 {
+        self.next_id::<Deduction>()
+    }
+
+    pub fn next_custom_payment_id(&self) -> i32 {
+        self.next_id::<CustomShiftPaymentType>()
     }
 }

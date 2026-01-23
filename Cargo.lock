@@ -522,6 +522,7 @@ dependencies = [
  "chrono",
  "native_db",
  "native_model",
+ "once_cell",
  "serde",
 ]
 
