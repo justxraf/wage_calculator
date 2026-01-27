@@ -1,9 +1,11 @@
-use std::{collections::{HashMap, HashSet}, f32::consts::PI, sync::{Arc, atomic::{AtomicI32, Ordering}}, time::Instant};
+use std::{collections::{HashMap, HashSet}, sync::{Arc, atomic::{AtomicI32, Ordering}}};
 use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime, NaiveTime, TimeDelta, Weekday};
-use serde::{Deserialize, Serialize, de};
+use serde::{Deserialize, Serialize};
 use native_db::{db_type::Error, *};
-use native_model::{Error, Model, native_model};
+use native_model::{Model, native_model};
 use once_cell::sync::Lazy;
+use native_db::{ToInput, ToKey};
+use dioxus::prelude::*;
 
 static BANK_HOLIDAYS: Lazy<BankHolidayChecker> = Lazy::new(|| {
     BankHolidayChecker::new(vec![
@@ -21,110 +23,28 @@ static MODELS: Lazy<Models> = Lazy::new(|| {
     models.define::<CustomShiftPaymentType>().unwrap();
     models
 });
-fn main() -> Result<(), db_type::Error> {
-    let mut db = Builder::new().create_in_memory(&MODELS)?;
+#[component]
+fn App() -> Element {
+    let db = Arc::new(Builder::new().create_in_memory(&MODELS).unwrap());
+    let jobs = use_signal(|| Job::load_all(&*db).unwrap());
+    let salary_multipliers = use_signal(|| SalaryMultiplier::load_all(&*db).unwrap());
+
     let id_gen = Arc::new(IdGenerator::new(&db).unwrap());
-    // Load the jobs! There is not much data that goes in them, so having them in the cache
-    // Is a better option, than loading "on-demand."
-    let jobs = Arc::new(Job::load_all(&db).unwrap());
-
-
-    // Example 1: Create a new Job
-    let job_id = id_gen.next_job_id();
-    let my_job = Job {
-        id: job_id,
-        name: String::from("Senior Technician"),
-        basic_pay: 2550,
-        base_pay_period_hours: Some(38),
-        shift_pattern: Some(ShiftPattern::SixOnTwoOff),
-        overtime_multiplier: Some(1.5),
-        saturday_multiplier: Some(1.5),
-        sunday_multiplier: Some(2.0),
-        bank_holiday_multiplier: Some(2.5),
-        christmass_day_multiplier: Some(3.0),
-        unsociable_hours_time_window: None,
-        unsociable_hours_multiplier: Some(1.2),
-        first_day: NaiveDate::from_ymd_opt(2026, 3, 16),
-        fixed_start_time: NaiveTime::from_hms_opt(8, 30, 0),
-        fixed_shift_duration: Some(
-            Duration::hours(8) + Duration::minutes(15) + Duration::seconds(30)
-        ),
-        tax_week_start: Some(TaxWeekStart::Sunday),
-    };
-
-    println!("begins with: {:?}, {:?} per second, converted back is {:?}",my_job.basic_pay, my_job.get_basic_hours_base_rate_per_second(),
-my_job.get_basic_hours_base_rate_per_second() * 3600.0);
-
-
-    // Example 2: Create a new Shift using generic syntax
-    let shift_id = id_gen.next_id::<Shift>();
-    let shift = Shift::new(
-        shift_id,
-        job_id,
-        NaiveDate::from_ymd_opt(2026, 1, 20).unwrap(),
-        ShiftType::ExtraShift,
-        NaiveDateTime::new(
-            NaiveDate::from_ymd_opt(2026, 1, 20).unwrap(),
-            NaiveTime::from_hms_opt(8, 30, 0).unwrap()
-        ),
-        NaiveDateTime::new(
-            NaiveDate::from_ymd_opt(2026, 1, 20).unwrap(),
-            NaiveTime::from_hms_opt(16, 45, 30).unwrap()
-        ),
-    );
-
-    // Example 3: Create a Deduction
-    let deduction_id = id_gen.next_deduction_id();
-    let deduction = Deduction {
-        id: deduction_id,
-        job_id,
-        shift_id,
-        name: String::from("Pension Contribution"),
-        description: Some(String::from("Monthly pension deduction")),
-        amount: 100_00, // £100.00 in pence
-        is_pre_tax: true,
-        schedule: ReocurrementSchedule::Monthly {
-            day_of_month: vec![1],
-            start_date: NaiveDate::from_ymd_opt(2026, 1, 1).unwrap(),
-            end_date: None,
-        },
-    };
-
-    // Example 4: Pass id_gen to functions
-    create_shift_with_deductions(&db, &id_gen, job_id);
-
-    Ok(())
-}
-
-// Helper function that uses id_gen
-fn create_shift_with_deductions(db: &Database, id_gen: &IdGenerator, job_id: i32) {
-    let shift_id = id_gen.next_shift_id();
-    let deduction_id = id_gen.next_deduction_id();
     
-    // Create entities...
-    println!("Created shift {} with deduction {}", shift_id, deduction_id);
+    use_context_provider(|| db);
+    use_context_provider(|| id_gen);
+    use_context_provider(|| jobs);
+    use_context_provider(|| salary_multipliers);
+
+    rsx!(
+        div { "Wages Calculator App" }
+    )
 }
 
 
-fn print_shifts(my_job: Job,start_date: NaiveDate, target_date: NaiveDate) {
-    let start = Instant::now();
-    let schedule = my_job.get_scheduled_shifts_for_period(start_date, target_date);
-
-    let duration = start.elapsed();
-
-    if schedule.is_empty() {
-        println!("No shifts found from {:?} to {:?}", start_date.to_string().replace("-", "/"), target_date.to_string().replace("-", "/"));
-        return
-    }
-    for day in schedule {
-        let status_text = match day.status {
-            ShiftStatus::ON => "WORK",
-            _ => "OFF"
-        };
-
-        println!("{}: {} (Week Day: {})", day.date, status_text, day.date.weekday());
-    }
-    println!("elapsed: {:?}", duration)
+fn main() -> Result<(), db_type::Error> {
+    dioxus::launch(App);
+    Ok(())
 }
 
 // If sunday, add one day to get the week commencing. // If Sunday to Saturday rota.
@@ -372,12 +292,12 @@ enum MultiplierBehavior {
 struct MultiplierResult {
     taken_amount: f32,
     final_amount: f32,
-    multipliers: Vec<&SalaryMultiplier>,
-    top_multiplier: Option<SalaryMultiplier>, // If the multiplier is marked as the highest only. 
+    multipliers: Vec<SalaryMultiplier>,  // Own the data instead of borrowing
+    top_multiplier: Option<SalaryMultiplier>,
 }
 // TODO - Add database support (save the value in the database!)
 impl SalaryMultiplier {
-    fn load_all(job_ids: Vec<i32>, db: &Database) -> Result<HashMap<i32, Vec<SalaryMultiplier>>, Error> { // i32 = job_id
+    fn load_all(db: &Database) -> Result<HashMap<i32, Vec<SalaryMultiplier>>, Error> {
         let r = db.r_transaction()?;
         
         let scan: Vec<SalaryMultiplier> = r
@@ -386,31 +306,30 @@ impl SalaryMultiplier {
             .all()?
             .collect::<Result<Vec<_>, _>>()?;
 
-        let multipliers: HashMap<i32, Vec<SalaryMultiplier>> = HashMap::new();
+        let mut multipliers: HashMap<i32, Vec<SalaryMultiplier>> = HashMap::new();
 
-        for job in scan {
-            let mut vector=  multipliers[&job.id];
-            vector.push(job);
+        for multiplier in scan {
+            multipliers
+                .entry(multiplier.job_id)
+                .or_insert_with(Vec::new)
+                .push(multiplier);
         }
 
         Ok(multipliers)
     }
+
     fn apply_modifiers(amount: f32, multipliers: Vec<SalaryMultiplier>) -> MultiplierResult {
-    
+        
         let highest_modifiers: Vec<&SalaryMultiplier> = multipliers
-            .iter()  // Use iter() instead of into_iter()
+            .iter()
             .filter(|modifier| modifier.behavior == MultiplierBehavior::HighestOnly)
             .collect();
 
         if !highest_modifiers.is_empty() {
-
-            // Look for a multiplier that has a "always_apply" priority
-            // First usage - use .iter() to borrow
-
             let always_apply_multipliers: Vec<&SalaryMultiplier> = highest_modifiers
                 .iter()
                 .filter(|multiplier| multiplier.priority == MultiplierPriority::AlwaysApply)
-                .copied()  // converts &&SalaryMultiplier to &SalaryMultiplier
+                .copied()
                 .collect();
 
             let highest_modifier = highest_modifiers
@@ -421,7 +340,7 @@ impl SalaryMultiplier {
                         .unwrap_or(std::cmp::Ordering::Equal)
                 })
                 .unwrap()
-                .clone();  // Clone the modifier since we only have a reference
+                .clone();
             
             let fixed_amount = always_apply_multipliers
                 .iter()
@@ -429,23 +348,27 @@ impl SalaryMultiplier {
                 .fold(amount, |current_amount, m| current_amount * m.multiplier);
 
             let final_amount = fixed_amount * highest_modifier.multiplier;
+            
             return MultiplierResult {
                 taken_amount: amount,
                 final_amount: final_amount,
-                multipliers: always_apply_multipliers,
+                multipliers: always_apply_multipliers.into_iter().cloned().collect(), // Clone here
                 top_multiplier: Some(highest_modifier),
             }
         }
+        
         let final_amount = multipliers
-        .iter()
-        .fold(amount, |current_amount, m | current_amount * m.multiplier );
+            .iter()
+            .fold(amount, |current_amount, m| current_amount * m.multiplier);
 
         MultiplierResult { 
             taken_amount: amount,
             final_amount: final_amount,
-            multipliers: multipliers,
-            top_multiplier: None }
+            multipliers: multipliers, // Consume the vec
+            top_multiplier: None 
+        }
     }
+
 
     fn new(
         id_gen: &IdGenerator,
@@ -497,8 +420,13 @@ impl Job {
             Ok(job_map)
     }
 
-    fn new(id_gen: &IdGenerator, name: String, basic_pay: i32, db: &Database) -> Job {
-
+    fn new(
+        id_gen: &IdGenerator,
+        name: String, 
+        basic_pay: i32, 
+        db: &Database,
+        mut jobs: Signal<HashMap<i32, Job>>,
+    ) -> Job {
         let id = id_gen.next_job_id();
         let job = Job {
             id: id,
@@ -506,99 +434,57 @@ impl Job {
             basic_pay,
             base_pay_period_hours: None,
             shift_pattern: None,
-
-            multiplier: Self::load_multipliers(id, db),
-
-            overtime_multiplier: None,
-            saturday_multiplier: None,
-            sunday_multiplier: None,
-            bank_holiday_multiplier: None,
-            christmass_day_multiplier: None,
-            unsociable_hours_multiplier: None,
-            unsociable_hours_time_window: None,
-
             first_day: None,
             fixed_start_time: None,
             fixed_shift_duration: None,
             tax_week_start: None,
         };
+        let saved_job = job.saved(db).expect("Error occurred while performing a database operation"); // todo handle error properly
 
-        // TODO: Add to the database!
+        jobs.write().insert(saved_job.id, saved_job.clone());
 
-        job
+        saved_job
     }
+
+    // Then update with each builder method
+    fn with_shift_pattern(mut self, pattern: ShiftPattern, db: &Database) -> Self {
+        self.shift_pattern = Some(pattern);
+        
+        // Update in database
+        self.updated(db).expect("Error occurred while performing a database operation") // todo handle error properly
+    }
+    // Builder pattern methods for setting optional fields
+    fn with_base_hours(mut self, hours: u32, db: &Database) -> Self {
+        self.base_pay_period_hours = Some(hours);
+        
+        self.updated(db).expect("Error occurred while performing a database operation") // todo handle error properly
+    }
+
+    fn with_first_day(mut self, date: NaiveDate, db: &Database) -> Self {
+        self.first_day = Some(date);
+        self.updated(db).expect("Error occurred while performing a database operation") // todo handle error properly
+    }
+
+    fn with_fixed_start_time(mut self, time: NaiveTime, db: &Database) -> Self {
+        self.fixed_start_time = Some(time);
+        self.updated(db).expect("Error occurred while performing a database operation") // todo handle error properly
+    }
+
+    fn with_fixed_shift_duration(mut self, duration: Duration, db: &Database) -> Self {
+        self.fixed_shift_duration = Some(duration);
+        self.updated(db).expect("Error occurred while performing a database operation") // todo handle error properly
+    }
+
+    fn with_tax_week_start(mut self, start: TaxWeekStart, db: &Database) -> Self {
+        self.tax_week_start = Some(start);
+        self.updated(db).expect("Error occurred while performing a database operation") // todo handle error properly
+    }
+
     // Example: basic_pay = 2500 (stored as pence, i.e., £25.00/hour)
     // Rate per second = 2500 / 3600 = 0.694 pence/second   
     fn get_basic_hours_base_rate_per_second(&self) -> f32 {
         self.basic_pay as f32 / 3600.0
     }
-    // Returns back the base rate multiplied by the unsociable rate multiplier
-    fn get_unsociable_hours_base_rate_per_second(&self) -> f32 {
-        self.get_basic_hours_base_rate_per_second() * self.unsociable_hours_multiplier.unwrap_or(1.0)
-    }
-    // Builder pattern methods for setting optional fields
-    fn with_base_hours(mut self, hours: u32) -> Self {
-        self.base_pay_period_hours = Some(hours);
-        self
-    }
-
-    fn with_shift_pattern(mut self, pattern: ShiftPattern) -> Self {
-        self.shift_pattern = Some(pattern);
-        self
-    }
-
-    fn with_overtime_multiplier(mut self, multiplier: f32) -> Self {
-        self.overtime_multiplier = Some(multiplier);
-        self
-    }
-
-    fn with_saturday_multiplier(mut self, multiplier: f32) -> Self {
-        self.saturday_multiplier = Some(multiplier);
-        self
-    }
-
-    fn with_sunday_multiplier(mut self, multiplier: f32) -> Self {
-        self.sunday_multiplier = Some(multiplier);
-        self
-    }
-
-    fn with_bank_holiday_multiplier(mut self, multiplier: f32) -> Self {
-        self.bank_holiday_multiplier = Some(multiplier);
-        self
-    }
-
-    fn with_christmas_day_multiplier(mut self, multiplier: f32) -> Self {
-        self.christmass_day_multiplier = Some(multiplier);
-        self
-    }
-
-    fn with_unsociable_hours_multiplier(mut self, multiplier: f32) -> Self {
-        self.unsociable_hours_multiplier = Some(multiplier);
-        self
-    }
-
-    fn with_first_day(mut self, date: NaiveDate) -> Self {
-        self.first_day = Some(date);
-        self
-    }
-
-    fn with_fixed_start_time(mut self, time: NaiveTime) -> Self {
-        self.fixed_start_time = Some(time);
-        self
-    }
-
-    fn with_fixed_shift_duration(mut self, duration: Duration) -> Self {
-        self.fixed_shift_duration = Some(duration);
-        self
-    }
-
-    fn with_tax_week_start(mut self, start: TaxWeekStart) -> Self {
-        self.tax_week_start = Some(start);
-        self
-    }
-
-    //
-
     fn get_tax_week_start(&self) -> TaxWeekStart {
         self.tax_week_start.unwrap_or(TaxWeekStart::Sunday)
     }
@@ -972,7 +858,6 @@ impl Deduction {
 }
 
 #[derive(PartialEq, Debug, Clone, Serialize, Deserialize)]
-
 struct ShiftRecord {
     shift: Shift,
     deductions: Option<Vec<Deduction>>,
@@ -1108,7 +993,8 @@ impl ShiftPayment {
 
         match shift.shift_type {
             ShiftType::Scheduled | ShiftType::ExtraShift => {
-                 let total_seconds_worked = (shift.finish - shift.start).num_seconds();
+                
+                let total_seconds_worked = (shift.finish - shift.start).num_seconds();
                 // Calculate unsociable seconds FIRST
                 let unsociable_seconds = ShiftPayment::calculate_unsociable_seconds(shift, job);
                 // Remaining seconds are at basic rate
@@ -1733,3 +1619,41 @@ impl BankHoliday {
         BankHoliday { date: date, name: name }
     }
 }
+
+trait Persistable: Clone + Sized + ToInput { 
+    fn save(&self, db: &Database) -> Result<(), Box<dyn std::error::Error>> {
+        let rw = db.rw_transaction()?;
+        rw.insert(self.clone())?;
+        rw.commit()?;
+        Ok(())
+    }
+    
+    fn update(&self, db: &Database) -> Result<(), Box<dyn std::error::Error>> {
+        let rw = db.rw_transaction()?;
+        rw.upsert(self.clone())?;
+        rw.commit()?;
+        Ok(())
+    }
+    fn delete(&self, db: &Database) -> Result<(), Box<dyn std::error::Error>> {
+        let rw = db.rw_transaction()?;
+        rw.remove(self.clone())?;
+        rw.commit()?;
+        Ok(())
+    }
+    // Consumes self and returns it back after saving (for builder pattern)
+    fn saved(self, db: &Database) -> Result<Self, Box<dyn std::error::Error>> {
+        self.save(db)?;
+        Ok(self)
+    }
+    
+    fn updated(self, db: &Database) -> Result<Self, Box<dyn std::error::Error>> {
+        self.update(db)?;
+        Ok(self)
+    }
+}
+
+impl Persistable for Job {}
+impl Persistable for Shift {}
+impl Persistable for Deduction {}
+impl Persistable for SalaryMultiplier {}
+impl Persistable for CustomShiftPaymentType {}
