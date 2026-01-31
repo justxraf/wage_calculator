@@ -1,4 +1,4 @@
-use std::{collections::{HashMap, HashSet}, sync::{Arc, atomic::{AtomicI32, Ordering}}};
+use std::{collections::{HashMap, HashSet}, ops::Mul, sync::{Arc, atomic::{AtomicI32, Ordering}}};
 use chrono::{Datelike, Duration, NaiveDate, NaiveDateTime, NaiveTime, TimeDelta, Weekday};
 use serde::{Deserialize, Serialize};
 use native_db::{db_type::Error, *};
@@ -21,15 +21,16 @@ static MODELS: Lazy<Models> = Lazy::new(|| {
     models.define::<Deduction>().unwrap();
     models.define::<Shift>().unwrap();
     models.define::<CustomShiftPaymentType>().unwrap();
+    models.define::<SalaryMultiplier>().unwrap();
     models
 });
 #[component]
 fn App() -> Element {
-    let db = Arc::new(Builder::new().create_in_memory(&MODELS).unwrap());
-    let jobs = use_signal(|| Job::load_all(&*db).unwrap());
-    let salary_multipliers = use_signal(|| SalaryMultiplier::load_all(&*db).unwrap());
+    let db = Arc::new(Builder::new().create_in_memory(&MODELS).expect("Error!"));
+    let jobs = use_signal(|| Job::load_all(&*db).expect("Error!"));
+    let salary_multipliers = use_signal(|| SalaryMultiplier::load_all(&*db).expect("Error!"));
 
-    let id_gen = Arc::new(IdGenerator::new(&db).unwrap());
+    let id_gen = Arc::new(IdGenerator::new(&db).expect("Error!"));
     
     use_context_provider(|| db);
     use_context_provider(|| id_gen);
@@ -37,8 +38,14 @@ fn App() -> Element {
     use_context_provider(|| salary_multipliers);
 
     rsx!(
-        div { "Wages Calculator App" }
+        div { "Wages Calculator App!" }
+        div { class: "context-stats",
+            span { "Jobs: {jobs.read().len()}" }
+            span { " | " }
+            span { "Multipliers: {salary_multipliers.read().values().flatten().count()}" }
+        }
     )
+
 }
 
 
@@ -93,6 +100,7 @@ impl TaxWeek {
              week_start_date: week_start_date
             }
     }
+
     fn get_week_commnencing(date: NaiveDate) -> u8 {
         let cycle_start_of_financial_year = TaxWeek::get_year_cycle_of_financial_year(date);
         let financial_year_start_date = NaiveDate::from_ymd_opt(cycle_start_of_financial_year, 4, 6).expect("invalid date format");
@@ -109,7 +117,7 @@ impl TaxWeek {
             date.year()
         }
     }
-    fn get_financial_year(date: NaiveDate) -> String {
+    fn get_financial_year(date: NaiveDate) -> String { //2025/2026 
         if date.month() < 4 || (date.month() == 4 && date.day() < 6) {
             format!("{}/{}", date.year() - 1, date.year())
         } else {
@@ -187,7 +195,7 @@ struct Job {
     fixed_shift_duration: Option<Duration>,
     tax_week_start: Option<TaxWeekStart>,
 }
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Hash)]
 #[native_model(id = 8, version = 1)]
 #[native_db]
 struct SalaryMultiplier {
@@ -203,17 +211,68 @@ struct SalaryMultiplier {
     name: String,
     description: Option<String>,
     schedule: ReocurrementSchedule,
-    multiplier: f32,
+    multiplier: Multiplier,
     time_window: Option<TimeWindow>,
 }
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Hash)]
+struct Multiplier {
+    value: i32
+}
+impl Multiplier {
+    // value is saved as 1_125 (integer) and converted to float by dividing it by 1000, resulting in 1.125
+    fn to_floating_point(&self) -> f32 {
+        self.value as f32 / 1000.0
+    }
+    fn from_floating_point(amount: f32) -> Self {
+        let value = (amount * 1000.0) as i32;
 
+        Multiplier { value }
+    }
+}
+// Example: 
+/*
+
+    Base Hours - Time_Window_Seconds = Result
+
+*/
+struct TimeWindowSummary { // Multiplier applied and amount of seconds resulted
+    multiplier: SalaryMultiplier,
+    seconds_worked: i64,
+}
+impl TimeWindowSummary {
+    /*
+    
+    Get total amount of seconds for a given shift (the i64) 
+    Get the multiplier (SalaryMultiplier)
+    Return the amount multiplied 
+     */
+    fn calculate_multiplied_amount(&self) -> f32 {
+        self.seconds_worked as f32 * self.multiplier.multiplier.to_floating_point()
+    }
+}
 // Allow to select a given time window for a shift.
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Hash, Copy)]
 struct TimeWindow {
     start: NaiveTime,
     end: NaiveTime
 }
 impl TimeWindow {
+    // Get only multipliers if they can be applied for a given date
+    fn get_time_window_seconds_for(multipliers: HashMap<SalaryMultiplier, &Shift>) -> Vec<TimeWindowSummary> {
+        let mut vec: Vec<TimeWindowSummary> = Vec::new();
+
+        for (multiplier, shift) in multipliers {
+            // Time Window is always present as this function won't be called
+            // Without it.
+            let time_window = multiplier.time_window.unwrap();
+            let seconds_worked = Self::calculate_time_overlap_seconds(&time_window, shift.start, shift.finish);
+            let time_window_summary = TimeWindowSummary { multiplier, seconds_worked };
+
+            vec.push(time_window_summary);
+        };
+
+        vec
+    }
     fn calculate_time_overlap_seconds(
         &self,
         shift_start: NaiveDateTime,
@@ -277,26 +336,30 @@ impl TimeWindow {
         total_seconds
     }
 }
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Hash)]
 enum MultiplierPriority {
     AlwaysApply,
     Low,
     Medium,
     High,
 }
-#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Hash)]
 enum MultiplierBehavior {
     Compound,
     HighestOnly,
 }
-struct MultiplierResult {
-    taken_amount: f32,
-    final_amount: f32,
+struct MultiplierResult<'a> {
+    for_shift: &'a Shift,
     multipliers: Vec<SalaryMultiplier>,  // Own the data instead of borrowing
     top_multiplier: Option<SalaryMultiplier>,
+    time_window_summary: Option<Vec<TimeWindowSummary>>,
 }
 // TODO - Add database support (save the value in the database!)
 impl SalaryMultiplier {
+    fn get_for(job: &Job, multipliers: &HashMap<i32, Vec<SalaryMultiplier>>) -> Option<Vec<SalaryMultiplier>> {
+        multipliers.get(&job.id).cloned()
+    }
+
     fn load_all(db: &Database) -> Result<HashMap<i32, Vec<SalaryMultiplier>>, Error> {
         let r = db.r_transaction()?;
         
@@ -317,58 +380,69 @@ impl SalaryMultiplier {
 
         Ok(multipliers)
     }
-
-    fn apply_modifiers(amount: f32, multipliers: Vec<SalaryMultiplier>) -> MultiplierResult {
-        
-        let highest_modifiers: Vec<&SalaryMultiplier> = multipliers
-            .iter()
-            .filter(|modifier| modifier.behavior == MultiplierBehavior::HighestOnly)
-            .collect();
-
-        if !highest_modifiers.is_empty() {
-            let always_apply_multipliers: Vec<&SalaryMultiplier> = highest_modifiers
-                .iter()
-                .filter(|multiplier| multiplier.priority == MultiplierPriority::AlwaysApply)
-                .copied()
-                .collect();
-
-            let highest_modifier = highest_modifiers
-                .into_iter()
-                .max_by(|a, b| {
-                    a.multiplier
-                        .partial_cmp(&b.multiplier)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                })
-                .unwrap()
-                .clone();
-            
-            let fixed_amount = always_apply_multipliers
-                .iter()
-                .filter(|f| f.id != highest_modifier.id)
-                .fold(amount, |current_amount, m| current_amount * m.multiplier);
-
-            let final_amount = fixed_amount * highest_modifier.multiplier;
-            
-            return MultiplierResult {
-                taken_amount: amount,
-                final_amount: final_amount,
-                multipliers: always_apply_multipliers.into_iter().cloned().collect(), // Clone here
-                top_multiplier: Some(highest_modifier),
-            }
-        }
-        
-        let final_amount = multipliers
-            .iter()
-            .fold(amount, |current_amount, m| current_amount * m.multiplier);
-
-        MultiplierResult { 
-            taken_amount: amount,
-            final_amount: final_amount,
-            multipliers: multipliers, // Consume the vec
-            top_multiplier: None 
-        }
+    fn is_time_window(&self) -> bool {
+        self.time_window.is_some()
     }
 
+    /*
+    
+    Another function asks for modifiers for a given shift ->
+    Modifiers are returned for it and based on them, the other function
+    is able to call this function and multiply its value accordingly.
+     */
+    fn get_modifiers<'a>(
+    shift: &'a Shift,
+    multipliers: Vec<SalaryMultiplier>,
+    ) -> MultiplierResult<'a> {        
+        let (highest_modifiers, rest): (Vec<SalaryMultiplier>, Vec<SalaryMultiplier>) = multipliers
+            .into_iter()
+            .partition(|m| m.behavior == MultiplierBehavior::HighestOnly);
+
+        if !highest_modifiers.is_empty() {
+            let highest_modifier = highest_modifiers
+                .iter()
+                .filter(|m| m.priority != MultiplierPriority::AlwaysApply)
+                .max_by(|a, b| {
+                    a.multiplier.to_floating_point()
+                        .partial_cmp(&b.multiplier.to_floating_point())
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .cloned();
+
+            let always_apply: Vec<SalaryMultiplier> = highest_modifiers
+                .into_iter()
+                .filter(|m| m.priority == MultiplierPriority::AlwaysApply)
+                .collect();
+
+            let time_window_summaries = Self::get_time_window_multipliers(shift, &always_apply);
+
+            return MultiplierResult {
+                for_shift: shift,
+                multipliers: always_apply,
+                top_multiplier: highest_modifier,
+                time_window_summary: time_window_summaries,
+            };
+        }
+
+        let time_window_summaries = Self::get_time_window_multipliers(shift, &rest);
+
+        
+        MultiplierResult {
+            for_shift: shift,
+            multipliers: rest,
+            top_multiplier: None,
+            time_window_summary: time_window_summaries,
+        }
+    }
+    fn get_time_window_multipliers(shift: &Shift, multipliers: &[SalaryMultiplier]) -> Option<Vec<TimeWindowSummary>> {
+        let time_window_map: HashMap<SalaryMultiplier, &Shift> = multipliers
+                .iter()
+                .filter(|m| m.is_time_window())
+                .map(|m| (m.clone(), shift))
+                .collect();
+
+        Some(TimeWindow::get_time_window_seconds_for(time_window_map))
+    }
 
     fn new(
         id_gen: &IdGenerator,
@@ -376,7 +450,7 @@ impl SalaryMultiplier {
         name: String, 
         description: Option<String>, 
         schedule: ReocurrementSchedule, 
-        multiplier: f32,
+        multiplier: Multiplier,
         behavior: MultiplierBehavior,
         priority: MultiplierPriority,
         time_window: Option<TimeWindow>
@@ -734,7 +808,7 @@ struct Deduction {
     schedule: ReocurrementSchedule,
 }
 
-#[derive(PartialEq, Serialize, Deserialize, Debug, Clone)]
+#[derive(PartialEq, Serialize, Deserialize, Debug, Clone, Eq, Hash)]
 enum ReocurrementSchedule {
     // One time action on a given date.
     OneTime {
@@ -984,120 +1058,19 @@ struct ShiftPayment {
 
 impl ShiftPayment {
     // Calculate payment for a single shift (WITHOUT overtime)
-    fn new_for_shift(shift: &Shift, job: &Job, db: &Database) -> Vec<ShiftPayment> {
+    // Multipliers should be taken from the global_context!
+    // Cannot be here as it's not a component.
+    // let Some(multipliers) = SalaryMultiplier::get_for(job, multipliers) else { return Vec::new() };
+    fn new_for_shift(shift: &Shift, job: &Job, db: &Database, multipliers: Vec<SalaryMultiplier>) -> Vec<ShiftPayment> {
         let mut payments = Vec::new();
         
         // Calculate precise seconds worked
         let basic_rate_per_second = job.get_basic_hours_base_rate_per_second();
-        let unsociable_rate_per_second: f32 = job.get_unsociable_hours_base_rate_per_second();      
+        
 
         match shift.shift_type {
             ShiftType::Scheduled | ShiftType::ExtraShift => {
                 
-                let total_seconds_worked = (shift.finish - shift.start).num_seconds();
-                // Calculate unsociable seconds FIRST
-                let unsociable_seconds = ShiftPayment::calculate_unsociable_seconds(shift, job);
-                // Remaining seconds are at basic rate
-                let basic_seconds = total_seconds_worked - unsociable_seconds;    
-                
-                // === DAY-OF-WEEK MULTIPLIERS ===
-                // Calculate total base for multiplier (all seconds at basic rate)
-                let total_base_amount = basic_seconds as f32 * basic_rate_per_second ;
-                let total_unsociable_amount = unsociable_seconds as f32 * unsociable_rate_per_second;
-                let weekday = shift.date.weekday();
-                
-                if weekday == Weekday::Sat && job.saturday_multiplier.is_some() {
-                    let multiplier = job.saturday_multiplier.unwrap();
-
-                    let basic_bonus_amount = (total_base_amount * (multiplier)) as u32;
-                    let unsociable_bonus_amount = (total_unsociable_amount * (multiplier)) as u32;
-
-                    if unsociable_seconds > 0 && job.unsociable_hours_multiplier.is_some() {
-                        payments.push(ShiftPayment {
-                            shift_id: shift.id,
-                            job_id: shift.job_id,
-                            amount: unsociable_bonus_amount as u32,
-                            payment_type: ShiftPaymentType::UnsociableSaturday,
-                            deductions: None,
-                        });
-                    }
-                    if total_base_amount > 0.0 {
-                        payments.push(ShiftPayment {
-                            shift_id: shift.id,
-                            job_id: shift.job_id,
-                            amount: basic_bonus_amount as u32,
-                            payment_type: ShiftPaymentType::Saturday,
-                            deductions: None,
-                        });
-                    }
-                } else if weekday == Weekday::Sun && job.sunday_multiplier.is_some() {
-                    let multiplier = job.sunday_multiplier.unwrap();
-                    let basic_bonus_amount = (total_base_amount * (multiplier)) as u32;
-                    let unsociable_bonus_amount = (total_unsociable_amount * (multiplier)) as u32;
-
-                    if unsociable_seconds > 0 && job.unsociable_hours_multiplier.is_some() {
-                        payments.push(ShiftPayment {
-                            shift_id: shift.id,
-                            job_id: shift.job_id,
-                            amount: unsociable_bonus_amount as u32,
-                            payment_type: ShiftPaymentType::UnsociableSunday,
-                            deductions: None,
-                        });
-                    }
-                    if total_base_amount > 0.0 {
-                        payments.push(ShiftPayment {
-                            shift_id: shift.id,
-                            job_id: shift.job_id,
-                            amount: basic_bonus_amount as u32,
-                            payment_type: ShiftPaymentType::Sunday,
-                            deductions: None,
-                        });
-                    }
-                } else if BANK_HOLIDAYS.is_bank_holiday(shift.date) && job.bank_holiday_multiplier.is_some() {
-                    let multiplier = job.bank_holiday_multiplier.unwrap();
-                    let basic_bonus_amount = (total_base_amount * (multiplier)) as u32;
-                    let unsociable_bonus_amount = (total_unsociable_amount * (multiplier)) as u32;
-
-                    if unsociable_seconds > 0 && job.unsociable_hours_multiplier.is_some() {
-                        payments.push(ShiftPayment {
-                            shift_id: shift.id,
-                            job_id: shift.job_id,
-                            amount: unsociable_bonus_amount as u32,
-                            payment_type: ShiftPaymentType::UnsociableBankHoliday,
-                            deductions: None,
-                        });
-                    }
-                    if total_base_amount > 0.0 {
-                        payments.push(ShiftPayment {
-                            shift_id: shift.id,
-                            job_id: shift.job_id,
-                            amount: basic_bonus_amount as u32,
-                            payment_type: ShiftPaymentType::BankHoliday,
-                            deductions: None,
-                        });
-                    }
-                } else {
-                    if unsociable_seconds > 0 && job.unsociable_hours_multiplier.is_some() {
-                        // Pay at the FULL multiplied rate for unsociable time
-                        payments.push(ShiftPayment {
-                            shift_id: shift.id,
-                            job_id: shift.job_id,
-                            amount: total_unsociable_amount as u32,
-                            payment_type: ShiftPaymentType::UnsociableBasic,
-                            deductions: None,
-                        });
-                    }
-                    if total_base_amount > 0.0 {
-                        payments.push(ShiftPayment {
-                            shift_id: shift.id,
-                            job_id: shift.job_id,
-                            amount: total_base_amount as u32,
-                            payment_type: ShiftPaymentType::Basic,
-                            deductions: None,
-                        });
-                    }
-
-                }
             },
             ShiftType::Sick => {
                 let base_amount = 0;
@@ -1124,24 +1097,6 @@ impl ShiftPayment {
         payments
     }
 
-    
-
-    fn calculate_unsociable_seconds(shift: &Shift, job: &Job) -> i64 {
-    // If no unsociable hours configured, return 0
-        let (unsociable_start, unsociable_end) = match job.unsociable_hours_time_window {
-            Some(window) => window,
-            None => return 0,
-        };
-        
-        // Calculate overlap between shift and unsociable window
-        Self::calculate_time_overlap_seconds(
-            shift.start,
-            shift.finish,
-            unsociable_start,
-            unsociable_end,
-        )
-    }
-
 }
 
 struct PaymentSummary {
@@ -1158,7 +1113,7 @@ impl PaymentSummary {
         let shift_payments: Vec<ShiftPayment> = todo!();
         let overtime_payments: Vec<ShiftPayment> = todo!();
         let total_deductions: Vec<ShiftPayment> = todo!();
-
+        let total_extra: Vec<ShiftPayment> = todo!();
         PaymentSummary { 
             job_id: job_id,
             period_start: from,
@@ -1166,6 +1121,7 @@ impl PaymentSummary {
             shift_payments: shift_payments,
             overtime_payments: overtime_payments,
             total_deductions: total_deductions,
+            total_extra: total_extra,
           }
     }
     // fn get_gross(&self) -> u32 {

@@ -1,0 +1,1 @@
+C:\Users\justx\Documents\Visual\ Studio\ Projects\learning_rust\wage_calculator\target\debug\wage_calculator.exe: C:\Users\justx\Documents\Visual\ Studio\ Projects\learning_rust\wage_calculator\src\main.rs

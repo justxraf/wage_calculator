@@ -1,0 +1,1 @@
+Result<SecondaryScanIterator<'_, redb::table::ReadOnlyTable<Key, &[u8]>, CustomShiftPaymentType>, native_db::db_type::Error>

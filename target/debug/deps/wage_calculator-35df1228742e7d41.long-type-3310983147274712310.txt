@@ -1,0 +1,1 @@
+Filter<std::vec::IntoIter<Result<CustomShiftPaymentType, native_db::db_type::Error>>, {closure@src\main.rs:1389:21: 1389:49}>

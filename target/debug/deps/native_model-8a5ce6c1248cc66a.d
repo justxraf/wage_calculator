@@ -1,0 +1,9 @@
+C:\Users\justx\Documents\Visual Studio Projects\learning_rust\wage_calculator\target\debug\deps\native_model-8a5ce6c1248cc66a.d: C:\Users\justx\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\native_model-0.6.2\src\lib.rs C:\Users\justx\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\native_model-0.6.2\src\codec\mod.rs C:\Users\justx\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\native_model-0.6.2\src\codec\bincode_1_3.rs C:\Users\justx\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\native_model-0.6.2\src\header.rs C:\Users\justx\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\native_model-0.6.2\src\wrapper.rs
+
+C:\Users\justx\Documents\Visual Studio Projects\learning_rust\wage_calculator\target\debug\deps\libnative_model-8a5ce6c1248cc66a.rmeta: C:\Users\justx\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\native_model-0.6.2\src\lib.rs C:\Users\justx\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\native_model-0.6.2\src\codec\mod.rs C:\Users\justx\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\native_model-0.6.2\src\codec\bincode_1_3.rs C:\Users\justx\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\native_model-0.6.2\src\header.rs C:\Users\justx\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\native_model-0.6.2\src\wrapper.rs
+
+C:\Users\justx\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\native_model-0.6.2\src\lib.rs:
+C:\Users\justx\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\native_model-0.6.2\src\codec\mod.rs:
+C:\Users\justx\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\native_model-0.6.2\src\codec\bincode_1_3.rs:
+C:\Users\justx\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\native_model-0.6.2\src\header.rs:
+C:\Users\justx\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\native_model-0.6.2\src\wrapper.rs:

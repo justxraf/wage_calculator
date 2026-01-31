@@ -8,6 +8,6 @@ chrono = { version = "0.4.43", features = ["serde"]}
 native_db = "0.8.2"
 native_model = "0.4.20"
 once_cell = "1.21.3"
-dioxus = "0.7.2"
+dioxus = "=0.7.2"
 
 serde = {version="1.0.228", features = ["derive"]}

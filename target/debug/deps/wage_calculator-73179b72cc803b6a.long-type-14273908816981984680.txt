@@ -1,0 +1,1 @@
+SecondaryScan<redb::table::ReadOnlyTable<Key, &[u8]>, redb::multimap_table::ReadOnlyMultimapTable<Key, Key>, NaiveDate>

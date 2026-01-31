@@ -1,0 +1,1 @@
+std::iter::Map<SecondaryScanIterator<'_, redb::table::ReadOnlyTable<Key, &[u8]>, CustomShiftPaymentType>, {closure@src\main.rs:443:14: 443:20}>
